@@ -1,0 +1,60 @@
+# Windows .gitignore
+
+# Flutter-specific
+**/Flutter/ephemeral/
+
+# Visual Studio Code
+.vscode/
+
+# Visual Studio
+.vs/
+.vscode/
+
+# Windows executables
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `flutter test`.
+flutter/ephemeral/.plugin_symlinks/
+
+# Coverage
+coverage/
+
+# Builds
+build/
+cmake-build-*/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+
+# Visual Studio Code
+.history/
+.ionide/
+
+# Windows Installer
+*.msi
+*.msm
+*.msp
+
+# Windows Store
+AppPackages/
+BundleArtifacts/
+Package.StoreAssociation.xml
+_pkginfo.txt
+*.appx
+*.appxbundle
+*.appxupload
+
+# Visual Studio cache/options directory
+.vs/
+*.VC.db
+*.VC.VC.opendb
+
+# Tmp files
+*.tmp
+*.temp
