@@ -1,0 +1,77 @@
+# Flutter .gitignore (standard Flutter template)
+
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.buildlog/
+.history
+.svn/
+migrate_working_dir/
+
+# IntelliJ related
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# The .vscode folder contains launch configuration and tasks you configure in
+# VS Code which you may wish to be included in version control, so this line
+# is commented out by default.
+#.vscode/
+
+# Flutter/Dart/Pub related
+# Libraries should not include pubspec.lock, per https://dart.dev/guides/libraries/private-files#pubspeclock
+pubspec.lock
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Android related
+**/android/app/debug
+**/android/app/profile
+**/android/app/release
+
+# iOS related (if applicable)
+**/ios/**/*.mode1v3
+**/ios/**/*.mode2v3
+**/ios/**/*.moved-aside
+**/ios/**/*.pbxuser
+**/ios/**/*.perspectivev3
+**/ios/**/xcuserdata
+
+# Web related (if applicable)
+lib/generated_plugin_registrant.dart
+
+# Symbolication related
+app.*.symbols
+
+# Obfuscation related
+app.*.map.json
+
+# Exceptions to above rules.
+!**/ios/**/default.mode1v3
+!**/ios/**/default.mode2v3
+!**/ios/**/default.pbxuser
+!**/ios/**/default.perspectivev3
+
+# macOS
+**/macos/Flutter/GeneratedPluginRegistrant.swift
+**/macos/Flutter/ephemeral
+
+# Windows
+**/windows/Flutter/GeneratedPluginRegistrant.cc
+**/windows/Flutter/ephemeral
+
+# Coverage
+coverage/
+
+# Exceptions to above rules.
+!**/linux/**/GeneratedPluginRegistrant.cc
+!**/macos/**/GeneratedPluginRegistrant.swift
+!**/windows/**/GeneratedPluginRegistrant.cc
