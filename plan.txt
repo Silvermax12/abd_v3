@@ -1,0 +1,169 @@
+> **Goal:** Build a complete Flutter anime batch downloader app that interacts with AnimePahe’s public API and pages to let users search anime, view episodes, pick qualities/languages, and extract the final `.m3u8` download link — *all locally without a backend.*
+
+---
+
+### **System Overview**
+
+Create a Flutter app with the following flow:
+
+1. **Search Page**
+
+   * User types an anime name.
+   * App queries the AnimePahe API:
+
+     ```
+     BASE_ORIGIN = "https://animepahe.si"
+     API_BASE = f"{BASE_ORIGIN}/api"
+     ```
+
+     For search:
+
+     ```
+     GET https://animepahe.si/api?m=search&q={query}
+     ```
+   * The API returns JSON with anime titles, sessions, and poster images.
+   * Display the results as cards in a list/grid view.
+   * When a user selects an anime, store its `anime_session`.
+
+2. **Episode List Page**
+
+   * Fetch episodes using:
+
+     ```
+     GET https://animepahe.si/api?m=release&id={anime_session}&sort=episode_asc&page={page}
+     ```
+   * Parse the returned JSON and display episode number, title, and thumbnail.
+   * When a user selects an episode, store its `episode_session`.
+
+3. **Quality & Language Extraction**
+
+   * For the chosen episode:
+
+     * Open the URL:
+
+       ```
+       https://animepahe.si/play/{anime_session}/{episode_session}
+       ```
+     * Use `flutter_inappwebview` in **headless mode**.
+     * Once loaded, inject JS to extract all dropdown options:
+
+       ```js
+       Array.from(document.querySelectorAll('.dropdown-item')).map(item => ({
+         src: item.getAttribute('data-src'),
+         fansub: item.getAttribute('data-fansub'),
+         resolution: item.getAttribute('data-resolution'),
+         audio: item.getAttribute('data-audio'),
+         label: item.innerText.trim()
+       }));
+       ```
+     * Send that list back to Dart as `List<QualityOption>`.
+     * Show the list in a modal bottom sheet for user selection.
+
+4. **m3u8 Extraction**
+
+   * When user selects a quality, simulate a click on the corresponding button:
+
+     ```js
+     var items = Array.from(document.querySelectorAll('.dropdown-item'));
+     var target = items.find(i => i.getAttribute('data-resolution') === '720' && i.getAttribute('data-fansub') === 'Vodes');
+     if (target) target.click();
+     ```
+   * While this runs, in Dart listen for network requests:
+
+     ```dart
+     onLoadResource: (controller, resource) {
+       if (resource.url.contains(".m3u8")) {
+         // Found the streaming link!
+       }
+     }
+     ```
+   * Once found, close the WebView and return the `.m3u8` link to your `DownloadManager`.
+
+5. **DownloadManager**
+
+   * Manage concurrent downloads (max 2).
+   * Support pausing/resuming.
+   * Track speed (MB/s) and ETA.
+   * Optionally call FFmpeg (through `ffmpeg_kit_flutter`) to re-encode or merge segments.
+   * Save output to the default user path (e.g., `Downloads/Animepahe Downloader/`).
+
+---
+
+### **Key Components to Implement**
+
+| Component         | Responsibility                                                |
+| ----------------- | ------------------------------------------------------------- |
+| `AnimeApiService` | Handles API calls (search, getEpisodes) using `http`.         |
+| `AnimeWebScraper` | Uses `flutter_inappwebview` to extract qualities and `.m3u8`. |
+| `DownloadManager` | Handles download tasks, re-encoding, progress tracking.       |
+| `AnimeListPage`   | Search UI and results.                                        |
+| `EpisodeListPage` | Episode list UI.                                              |
+| `QualitySelector` | Modal that shows available quality/language.                  |
+| `DownloadPage`    | Shows progress for all active downloads.                      |
+
+---
+
+### **Technical Constraints**
+
+* Must work on Android (target SDK 34) and Windows (optional).
+* Use `flutter_inappwebview` for hidden browser tasks.
+* Limit concurrent WebViews to 1.
+* Limit concurrent downloads to 2.
+* Use `Isolate` or `compute()` for download threads.
+* Automatically close WebView after m3u8 link extraction.
+* Include error handling for:
+
+  * Blocked pages.
+  * Missing `.m3u8` link.
+  * Timeout (>20s).
+  * Network errors.
+* Cache search results locally (e.g., Hive or SharedPrefs).
+
+---
+
+### **Sample Usage Flow**
+
+```dart
+final api = AnimeApiService();
+final animeList = await api.search("One Piece");
+final episodes = await api.getEpisodes(animeList.first.session);
+
+final scraper = AnimeWebScraper();
+final qualities = await scraper.getQualities(animeList.first.session, episodes.first.session);
+
+final chosen = qualities.firstWhere((q) => q.resolution == "720");
+final m3u8 = await scraper.extractM3U8(animeList.first.session, episodes.first.session, chosen);
+
+DownloadManager().addDownload(m3u8);
+```
+
+---
+
+### **Performance & Safety**
+
+* Auto-close WebView after extraction to prevent overheating.
+* Use lazy page loading for episode lists.
+* Add “clear cache” button in settings.
+* Use background isolates for downloading to avoid blocking UI.
+
+---
+
+### **Ethics & Warnings**
+
+Include a clear in-app notice that users are responsible for how they use the tool, and that it’s for educational/demo use only.
+
+---
+
+### **Acceptance Criteria**
+
+✅ User can:
+
+* Search anime by name.
+* View all episodes.
+* Select an episode → see quality & language options.
+* Pick one → app extracts m3u8 link → starts download.
+  ✅ No backend required.
+  ✅ Max 2 concurrent downloads.
+  ✅ Stable under 2GB RAM.
+
+---

@@ -1,0 +1,404 @@
+# M3U8 Parsing and Inspection Logic in Flutter App
+
+This document details **every aspect of how M3U8 playlists are parsed, inspected, and analyzed** in the Flutter anime batch downloader app.
+
+## 1. Initial M3U8 Fetch and Content Retrieval
+
+### `downloadM3u8WithControls()` - Initial Inspection Phase
+**Location:** `M3u8Service.downloadM3u8WithControls()`
+
+**Purpose:** Fetches the M3U8 playlist and performs initial content analysis to determine stream type and processing requirements.
+
+```dart
+// Fetch M3U8 playlist from URL
+final response = await http.get(Uri.parse(m3u8Url));
+if (response.statusCode != 200) {
+  throw Exception('Failed to fetch M3U8: ${response.statusCode} - ${response.reasonPhrase}');
+}
+final m3u8Content = response.body;
+print('✅ M3U8 fetched successfully (${m3u8Content.length} bytes)');
+```
+
+**Content Validation:**
+- **HTTP Status Check:** Ensures successful response (200 OK)
+- **Content Length Logging:** Records playlist size for debugging
+- **Error Handling:** Throws descriptive exceptions for fetch failures
+
+## 2. Stream Type Detection and Classification
+
+### Content Analysis Logic
+**Purpose:** Analyzes M3U8 content to classify stream types and determine appropriate processing strategy.
+
+```dart
+// Step 1: Extension Analysis
+final hasJpgExtensions = m3u8Content.contains('.jpg');
+final hasTsExtensions = m3u8Content.contains('.ts') || m3u8Content.contains('.m4s');
+final hasEncryption = m3u8Content.contains('#EXT-X-KEY:METHOD=AES-128');
+
+// Step 2: Stream Type Classification
+// 1. Encrypted JPEG-over-HLS (streams with .jpg + encryption but no .ts)
+final isEncryptedJpegOverHls = hasJpgExtensions && !hasTsExtensions && hasEncryption;
+
+// 2. True MJPEG streams (has .jpg extensions but no encryption)
+final isTrueMjpegStream = hasJpgExtensions && !hasEncryption;
+
+// 3. Standard HLS streams (default case)
+final isStandardHls = !isEncryptedJpegOverHls && !isTrueMjpegStream;
+```
+
+### Stream Type Detection Criteria
+
+| Stream Type | JPG Extensions | TS Extensions | Encryption | Processing Method |
+|-------------|----------------|---------------|------------|-------------------|
+| **Encrypted JPEG-over-HLS** | ✅ | ❌ | ✅ | Download + Decrypt + Concat + Encode |
+| **True MJPEG** | ✅ | ❌ | ❌ | Download Frames + Image Sequence |
+| **Standard HLS** | ❌ | ✅ | ❌/✅ | Download + Concat + Encode |
+
+## 3. Core M3U8 Content Parsing
+
+### `_parseM3u8Content()` Method
+**Purpose:** Parses raw M3U8 playlist text into structured data containing segments and encryption information.
+
+```dart
+Map<String, dynamic> _parseM3u8Content(String m3u8Content, String baseUrl) {
+  final segments = <String>[];
+  Map<String, String>? encryptionInfo;
+
+  final lines = m3u8Content.split('\n');
+
+  for (int i = 0; i < lines.length; i++) {
+    final line = lines[i].trim();
+
+    // Check for encryption key
+    if (line.startsWith('#EXT-X-KEY:')) {
+      encryptionInfo = _parseEncryptionInfo(line, baseUrl);
+    }
+
+    // Parse segments
+    if (line.isNotEmpty && !line.startsWith('#') && line.contains('http')) {
+      segments.add(line);
+    }
+  }
+
+  print('📊 Parsed ${segments.length} segment URLs from M3U8');
+  if (encryptionInfo != null) {
+    print('🔐 Found encryption: ${encryptionInfo['method']}');
+  }
+
+  return {
+    'segments': segments,
+    'encryption': encryptionInfo,
+  };
+}
+```
+
+**Parsing Logic:**
+1. **Line-by-Line Processing:** Splits content by newlines and processes each line
+2. **Comment Filtering:** Ignores lines starting with `#` (except encryption keys)
+3. **URL Detection:** Identifies segment URLs containing 'http'
+4. **Encryption Detection:** Special handling for `#EXT-X-KEY:` lines
+
+**Return Structure:**
+```dart
+{
+  'segments': List<String>,     // Array of segment URLs
+  'encryption': Map<String, String>?  // Encryption info or null
+}
+```
+
+## 4. Encryption Information Parsing
+
+### `_parseEncryptionInfo()` Method
+**Purpose:** Extracts AES-128 encryption parameters from M3U8 `#EXT-X-KEY` directives.
+
+```dart
+Map<String, String>? _parseEncryptionInfo(String keyLine, String baseUrl) {
+  try {
+    // Example: #EXT-X-KEY:METHOD=AES-128,URI="https://example.com/key"
+    final methodMatch = RegExp(r'METHOD=([^,]+)').firstMatch(keyLine);
+    final uriMatch = RegExp(r'URI="([^"]+)"').firstMatch(keyLine);
+
+    if (methodMatch != null && uriMatch != null) {
+      String keyUri = uriMatch.group(1)!;
+
+      // Resolve relative URLs
+      if (!keyUri.startsWith('http')) {
+        keyUri = _resolveUrl(baseUrl, keyUri);
+      }
+
+      return {
+        'method': methodMatch.group(1)!,  // e.g., "AES-128"
+        'uri': keyUri,                     // Resolved key URL
+      };
+    }
+  } catch (e) {
+    print('⚠️ Error parsing encryption info: $e');
+  }
+  return null;
+}
+```
+
+**Regex Patterns:**
+- **Method:** `METHOD=([^,]+)` - Captures encryption method
+- **URI:** `URI="([^"]+)"` - Captures key URL in quotes
+
+**URL Resolution:**
+- **Absolute URLs:** Used as-is
+- **Relative URLs:** Resolved against base M3U8 URL
+
+## 5. URL Resolution Utility
+
+### `_resolveUrl()` Method
+**Purpose:** Converts relative URLs to absolute URLs using Dart's URI resolution.
+
+```dart
+String _resolveUrl(String baseUrl, String relativeUrl) {
+  final baseUri = Uri.parse(baseUrl);
+  final relativeUri = Uri.parse(relativeUrl);
+  return baseUri.resolveUri(relativeUri).toString();
+}
+```
+
+**Resolution Examples:**
+```dart
+// Base: https://cdn.example.com/hls/stream.m3u8
+// Relative: key.bin
+// Result: https://cdn.example.com/hls/key.bin
+
+// Base: https://cdn.example.com/hls/
+// Relative: ../keys/key.bin
+// Result: https://cdn.example.com/keys/key.bin
+```
+
+## 6. FFmpeg Progress Parsing
+
+### `_parseFFmpegProgress()` Method
+**Purpose:** Extracts encoding progress information from FFmpeg stderr output during video re-encoding.
+
+```dart
+Map<String, double>? _parseFFmpegProgress(String message) {
+  try {
+    // Example: "frame= 2538 fps=139 q=32.0 size=    4352kB time=00:01:48.49 bitrate= 328.6kbits/s speed=5.96x"
+
+    final frameRegex = RegExp(r'frame=\s*(\d+)');
+    final fpsRegex = RegExp(r'fps=\s*(\d+(?:\.\d+)?)');
+    final sizeRegex = RegExp(r'size=\s*(\d+)kB');
+    final timeRegex = RegExp(r'time=(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)');
+    final bitrateRegex = RegExp(r'bitrate=\s*(\d+(?:\.\d+)?)kbits/s');
+    final speedRegex = RegExp(r'speed=\s*(\d+(?:\.\d+)?)x');
+
+    // Extract all matches...
+    final frameMatch = frameRegex.firstMatch(message);
+    final fpsMatch = fpsRegex.firstMatch(message);
+    final sizeMatch = sizeRegex.firstMatch(message);
+    final timeMatch = timeRegex.firstMatch(message);
+    final bitrateMatch = bitrateRegex.firstMatch(message);
+    final speedMatch = speedRegex.firstMatch(message);
+
+    if (frameMatch != null && timeMatch != null) {
+      // Parse frame number
+      final frame = double.parse(frameMatch.group(1)!);
+
+      // Parse FPS
+      final fps = fpsMatch != null ? double.parse(fpsMatch.group(1)!) : 0.0;
+
+      // Parse size in KB
+      final sizeKB = sizeMatch != null ? double.parse(sizeMatch.group(1)!) : 0.0;
+
+      // Parse time (HH:MM:SS.ms format)
+      final hours = double.parse(timeMatch.group(1)!);
+      final minutes = double.parse(timeMatch.group(2)!);
+      final seconds = double.parse(timeMatch.group(3)!);
+      final totalSeconds = hours * 3600 + minutes * 60 + seconds;
+
+      // Parse bitrate and speed
+      final bitrate = bitrateMatch != null ? double.parse(bitrateMatch.group(1)!) : 0.0;
+      final speed = speedMatch != null ? double.parse(speedMatch.group(1)!) : 1.0;
+
+      return {
+        'frame': frame,        // Current frame number
+        'fps': fps,           // Frames per second
+        'size': sizeKB,       // Size in KB
+        'time': totalSeconds, // Total seconds encoded
+        'bitrate': bitrate,   // Bitrate in kbits/s
+        'speed': speed,       // Encoding speed multiplier
+      };
+    }
+  } catch (e) {
+    print('⚠️ Error parsing FFmpeg progress: $e');
+  }
+  return null;
+}
+```
+
+**Regex Patterns Used:**
+- **Frame:** `frame=\s*(\d+)` - Captures frame count
+- **FPS:** `fps=\s*(\d+(?:\.\d+)?)` - Captures frames per second
+- **Size:** `size=\s*(\d+)kB` - Captures size in kilobytes
+- **Time:** `time=(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)` - Captures HH:MM:SS.ms format
+- **Bitrate:** `bitrate=\s*(\d+(?:\.\d+)?)kbits/s` - Captures bitrate
+- **Speed:** `speed=\s*(\d+(?:\.\d+)?)x` - Captures speed multiplier
+
+## 7. Duration Formatting
+
+### `_formatDuration()` Method
+**Purpose:** Converts total seconds into human-readable HH:MM:SS format for ETA display.
+
+```dart
+String _formatDuration(int totalSeconds) {
+  if (totalSeconds <= 0) return '00:00:00';
+
+  final hours = totalSeconds ~/ 3600;        // Integer division for hours
+  final minutes = (totalSeconds % 3600) ~/ 60; // Remainder, then divide by 60
+  final seconds = totalSeconds % 60;          // Final remainder
+
+  return '${hours.toString().padLeft(2, '0')}:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+}
+```
+
+**Formatting Examples:**
+- `65 seconds` → `"00:01:05"`
+- `3661 seconds` → `"01:01:01"`
+- `7323 seconds` → `"02:02:03"`
+
+## 8. Helper Classes for M3U8 Structure
+
+### `M3u8Key` Class
+**Purpose:** Represents encryption key information in a structured format.
+
+```dart
+class M3u8Key {
+  final String uri;
+  final String? method;
+
+  M3u8Key({
+    required this.uri,
+    this.method,
+  });
+}
+```
+
+### `M3u8Playlist` Class
+**Purpose:** Represents a complete M3U8 playlist with segments and keys.
+
+```dart
+class M3u8Playlist {
+  final List<M3u8Segment> segments;
+  final List<M3u8Key> keys;
+
+  M3u8Playlist({
+    required this.segments,
+    this.keys = const [],
+  });
+}
+```
+
+### `M3u8Segment` Class
+**Purpose:** Represents individual video segments with URL and duration.
+
+```dart
+class M3u8Segment {
+  final String url;
+  final double duration;
+
+  M3u8Segment({
+    required this.url,
+    required this.duration,
+  });
+}
+```
+
+## 9. Content Analysis Flow Summary
+
+### Complete Parsing Pipeline
+
+```mermaid
+graph TD
+    A[M3U8 URL] --> B[HTTP GET Request]
+    B --> C[Raw M3U8 Content]
+    C --> D[Extension Analysis]
+    D --> E[Encryption Detection]
+    E --> F[Stream Type Classification]
+    F --> G[_parseM3u8Content]
+    G --> H[Line-by-Line Processing]
+    H --> I{Is #EXT-X-KEY: line?}
+    I -->|Yes| J[_parseEncryptionInfo]
+    I -->|No| K{Is segment URL?}
+    K -->|Yes| L[Add to segments list]
+    K -->|No| H
+    J --> M[Extract METHOD and URI]
+    M --> N[Resolve relative URLs]
+    N --> O[Return encryption info]
+    L --> P[Return parsed data]
+```
+
+### Stream Type Decision Tree
+
+```mermaid
+graph TD
+    A[M3U8 Content] --> B{Has .jpg extensions?}
+    B -->|Yes| C{Has encryption?}
+    B -->|No| F[Standard HLS]
+
+    C -->|Yes| D{Has .ts extensions?}
+    C -->|No| E[True MJPEG]
+
+    D -->|Yes| F
+    D -->|No| G[Encrypted JPEG-over-HLS]
+```
+
+## 10. Error Handling and Validation
+
+### Parsing Error Recovery
+- **Invalid URLs:** Logged but parsing continues
+- **Malformed Encryption:** Returns null, assumes unencrypted
+- **Missing Segments:** Empty list returned, handled upstream
+- **FFmpeg Parse Failures:** Returns null, uses alternative progress calculation
+
+### Content Validation Checks
+- **HTTP Response Codes:** 200 required for valid content
+- **Content Length:** Logged for debugging playlist size
+- **Segment Count:** Logged for verification
+- **Encryption Detection:** Logged when found
+
+## 11. Performance Considerations
+
+### Parsing Efficiency
+- **Single Pass:** Content parsed in one iteration
+- **Regex Optimization:** Compiled patterns for repeated use
+- **Memory Efficient:** Minimal intermediate storage
+- **Streaming Compatible:** Processes lines as they're split
+
+### Progress Parsing Optimization
+- **Selective Parsing:** Only processes lines containing progress info
+- **Error Tolerant:** Continues on individual parse failures
+- **Lightweight:** Uses simple regex without complex computations
+
+## 12. Integration with Download Logic
+
+### Parsed Data Usage
+```dart
+final parsed = _parseM3u8Content(m3u8Content, m3u8Url);
+final segments = parsed['segments'] as List<String>;
+final encryptionInfo = parsed['encryption'] as Map<String, String>?;
+
+// Segments used for download loops
+// Encryption info used for key retrieval and decryption
+```
+
+### Stream Type Routing
+```dart
+if (isEncryptedJpegOverHls) {
+  // Use encryption-aware download logic
+  return await processEncryptedJpegStream(segments, encryptionInfo);
+} else if (isTrueMjpegStream) {
+  // Use MJPEG frame processing
+  return await processMjpegStream(segments);
+} else {
+  // Use standard HLS processing
+  return await processStandardHls(segments);
+}
+```
+
+This comprehensive parsing system enables the app to handle diverse streaming formats while maintaining robust error handling and performance optimization.
+R
